@@ -12,6 +12,11 @@
     - 注視点上の図形が拡大しない時があるので位置がずれている
       - ⇒ r113では"cursor-l", "cursor-r"のmarginは不要
     - Androidの場合は「センサー有効化」のボタンは表示しないで最初から実行
+    - 「センサー有効化」の直後は位置がずれてしまうのでオフセットを付ける
+      - https://tknc.jp/tp_detail.php?id=841
+      - ただ、上記のサンプルはDeviceOrientationControlsのみを使っている。
+      　一方、こちらのソースはOrbitControlsからDeviceOrientationControlsに切り替えているため、
+      　オフセット値の取得方法は初回のデバイスからの値としている。(isFirstDeviceValueフラグの使用)
 -->
 <html>
 <head>
@@ -102,13 +107,19 @@
 <script type="text/javascript">
   var container;
   var camera, scene, renderer, element, controls;
+  var camera_dev;
+  var rotate_offset_x, rotate_offset_y, rotate_offset_z;
+  var rotate_offset_dev_x, rotate_offset_dev_y, rotate_offset_dev_z;
+  var selectedId = -1;
+  var isFirstDeviceValue = true;
+
   var group;
   var baseColor=0xffffff;
 
   //THREE.Raycaster用
   var raycaster,scopedObj;
   var cursor= new THREE.Vector2(0,0);
-
+  
   $(function() {
     if ( ! Detector.webgl ){
       Detector.addGetWebGLMessage();
@@ -117,11 +128,11 @@
       animate();
     }
   });
-
+  
   function init(){
     scene = new THREE.Scene();
     container = document.getElementById('world');
-
+  
     camera = new THREE.PerspectiveCamera( 90, window.innerWidth / window.innerHeight, 1, 10000 );
     camera.position.z = 2000;
 
@@ -131,7 +142,7 @@
     container.appendChild( renderer.domElement );
 
     /* 注視点の処理をするTHREE.Raycaster */
-    raycaster = new THREE.Raycaster();
+    raycaster = new THREE.Raycaster();    
 
     /* Light */
     ambLight = new THREE.AmbientLight( 0xffffff, 0.5 );
@@ -165,25 +176,25 @@
     );
     controls.noZoom = true;
     controls.noPan = true;
-
+  
     //両眼カメラレンダリング
     effect = new THREE.StereoEffect( renderer );
     effect.setSize(window.innerWidth, window.innerHeight);
     effect.eyeSeparation = 10;
-
+  
     /* 描画状態の表示 */
     stats = new Stats();
     stats.domElement.style.position = 'absolute';
     stats.domElement.style.top = '50px';
     container.appendChild( stats.domElement );
-
+    
     /* 奥の図形を霞ませるfog効果 */
     scene.fog = new THREE.Fog( baseColor, 500, cubeAreaSize );
 
     /* ウインドウリサイズ時のイベント処理 */
     window.addEventListener( 'resize', resize, false );
     setTimeout(resize, 1);
-
+    
     /* サンプル図形の生成 */
     makeCubes();
   }
@@ -203,10 +214,25 @@
       return;
     }
 
+    /* DeviceOrientationControl用のカメラを作成 */
+    camera_dev = new THREE.PerspectiveCamera( 90, window.innerWidth / window.innerHeight, 1, 10000 );
+    //jQuery.extend(true, camera_dev, camera)
+    camera_dev.position.x = camera.position.x;
+    camera_dev.position.y = camera.position.y;
+    camera_dev.position.z = camera.position.z;
+
     /* ジャイロ角度を取得できているので操作方法もジャイロに変更 */
-    controls = new THREE.DeviceOrientationControls(camera, true);
+    controls = new THREE.DeviceOrientationControls(camera_dev, true);
     controls.connect();
     controls.update();
+    /* ジャイロ開始時の値をオフセットとして取得 */
+// ただ、ここで取得しても値が不正のためisFirstDeviceValueにて初回の値を利用
+//    rotate_offset_x = camera.rotation.x;
+//    rotate_offset_y = camera.rotation.y;
+//    rotate_offset_z = camera.rotation.z;
+//    rotate_offset_dev_x = camera_dev.rotation.x;
+//    rotate_offset_dev_y = camera_dev.rotation.y;     // ⇒この時だと-1.57 (-PI/2)になってしまう
+//    rotate_offset_dev_z = camera_dev.rotation.z;
 
     /* THREE.DeviceOrientationControlsでリスナを追加しているので、ここでは除去する　*/
     window.removeEventListener('deviceorientation', setOrientationControls, true);
@@ -223,18 +249,17 @@
           window.addEventListener( 'deviceorientation', setOrientationControls, true );
         }
       });
-
-
-
-
   }
-
+  
   /* デバック用にログ表示　*/
-  function log(msg) {
+  function log(msg, clear) {
     var logDiv = document.getElementById("log");
+    if (clear) {
+      logDiv.innerHTML = "";  
+    }
     logDiv.innerHTML += (msg + "<br/>");
   }
-
+  
   function resize() {
     var width = window.innerWidth;
     var height = window.innerHeight;
@@ -243,7 +268,7 @@
     renderer.setSize( width, height );
     effect.setSize( width, height );
   }
-
+  
   function update(){
     cubeUpdate();
   }
@@ -252,7 +277,7 @@
     /* Effect内で実施しているためrendererはコメントアウト */
     //renderer.render( scene, camera );
     effect.render( scene, camera );
-
+ 
     /* 注視点に乗っているオブジェクトを取得 */
     raycaster.setFromCamera( cursor, camera );
     var intersects = raycaster.intersectObjects( group.children );
@@ -261,11 +286,55 @@
         if ( scopedObj ) scopedObj.scale.set(1,1,1);
         scopedObj = intersects[ 0 ].object;
         scopedObj.scale.set(2,2,2);
+        selectedId = scopedObj.id;
       }
     } else {
       if ( scopedObj ) scopedObj.scale.set(1,1,1);
       scopedObj = null;
     }
+
+    if (camera_dev) {
+      var rotate_dev_x=camera_dev.rotation.x;
+			var rotate_dev_y=camera_dev.rotation.y;
+			var rotate_dev_z=camera_dev.rotation.z;
+
+      if (isFirstDeviceValue) {
+        /* 初回にデバイスから取得したデータをオフセットとする */
+        rotate_offset_x = camera.rotation.x;
+        rotate_offset_y = camera.rotation.y;
+        rotate_offset_z = camera.rotation.z;
+        rotate_offset_dev_x = rotate_dev_x;
+        rotate_offset_dev_y = rotate_dev_y;
+        rotate_offset_dev_z = rotate_dev_z;
+        isFirstDeviceValue = false; 
+      }
+
+
+      log("position:" + camera.position.x.toFixed(2) + ", " + camera.position.y.toFixed(2) + ", " + camera.position.z.toFixed(2), true);
+      log("position_dev:" + camera_dev.position.x.toFixed(2) + ", " + camera_dev.position.y.toFixed(2) + ", " + camera_dev.position.z.toFixed(2));
+      log("rotate_offset:" + rotate_offset_x.toFixed(2) + ", " + rotate_offset_y.toFixed(2) + ", " + rotate_offset_z.toFixed(2));
+      log("rotate_offset_dev:" + rotate_offset_dev_x.toFixed(2) + ", " + rotate_offset_dev_y.toFixed(2) + ", " + rotate_offset_dev_z.toFixed(2));
+      log("rotate_dev:" + rotate_dev_x.toFixed(2) + ", " + rotate_dev_y.toFixed(2) + ", " + rotate_dev_z.toFixed(2));
+      log("selected: " + selectedId);
+
+      /*
+       * ジャイロから取得した値を描画用のカメラに設定
+       * 
+       * オフセット値を考慮する。
+       * ジャイロ値のオフセット値を引き算して、「センサー有効化」前の値は足し算となる
+       */
+      camera.rotation.x=(rotate_dev_x - rotate_offset_dev_x + rotate_offset_x);
+      camera.rotation.y=(rotate_dev_y - rotate_offset_dev_y + rotate_offset_y);
+      camera.rotation.z=(rotate_dev_z - rotate_offset_dev_z + rotate_offset_z);
+
+      log("rotate_adjusted:" + camera.rotation.x.toFixed(2) + ", " + camera.rotation.y.toFixed(2) + ", " + camera.rotation.z.toFixed(2));
+    }
+    else {
+      log("position:" + camera.position.x.toFixed(2) + ", " + camera.position.y.toFixed(2) + ", " + camera.position.z.toFixed(2), true);
+      log("rotate:" + camera.rotation.x.toFixed(2) + ", " + camera.rotation.y.toFixed(2) + ", " + camera.rotation.z.toFixed(2));
+      log("selected: " + selectedId);
+    }
+
 
   }
   function animate() {
@@ -275,8 +344,8 @@
     render();
     stats.update();
   }
-
-
+  
+  
   /* CUBEの作成 */
   var cubeColors=[
     0x3369e8,
@@ -289,7 +358,7 @@
   cubeSizeBase=100,
   cubeSizeRnd=300,
   cubeAreaSize=12000;
-
+  
   function makeCubes(){
     group = new THREE.Group();
     scene.add( group );
@@ -299,13 +368,13 @@
       cubes.push(cube);
     }
   }
-
+  
   function cubeUpdate(){
     for(var i=0; i<cubes.length; i++){
       cubes[i].update();
     }
   }
-
+  
   var Cube=function() {
     var size=Math.random()*cubeSizeRnd+cubeSizeBase;
     this.geometry=new THREE.BoxGeometry( size, size, size );
@@ -344,7 +413,7 @@
       <div id="cursors">
         <div class="cursor cursor-l"><p class="dot"></p></div>
         <div class="cursor cursor-r"><p class="dot"></p></div>
-      </div>
+      </div>    
     </div>
     <div id="log"></div>
   </div>
